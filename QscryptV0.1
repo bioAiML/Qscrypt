@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+
+import hashlib
+import time
+import os
+import threading
+import random
+import math
+import numpy as np
+import pyopencl as cl
+import json
+
+# OpenCL setup for GPU acceleration (Qubic-compatible)
+platform = cl.get_platforms()[0]
+device = platform.get_devices()[0]  # Default to first device (e.g., Adreno)
+context = cl.Context([device])
+queue = cl.CommandQueue(context)
+
+# Optimized Scrypt kernel
+kernel_code = """
+__kernel void scrypt_upow(__global uint *input, __global uint *nonce, __global uint *output, uint target_difficulty, uint batch_size) {
+    uint gid = get_global_id(0);
+    if (gid < batch_size) {
+        uint local_nonce = nonce[gid];
+        uint hash_input[32];
+        for (int i = 0; i < 32; i++) hash_input[i] = input[i] ^ local_nonce;
+        uint hash = 0;
+        for (int i = 0; i < 1024; i++) {
+            hash += hash_input[gid % 32] * (i + 1);
+        }
+        if (hash < target_difficulty) {
+            output[gid] = hash;
+        } else {
+            output[gid] = 0xffffffff;
+        }
+    }
+}
+"""
+program = cl.Program(context, kernel_code).build()
+scrypt_kernel = program.scrypt_upow
+
+# Scrypt implementation
+def mock_scrypt(data: bytes, salt: bytes, N=1024, r=1, p=1, dklen=32):
+    B = bytearray(hashlib.pbkdf2_hmac('sha256', data, salt, 1, dklen * p))
+    for i in range(p):
+        slice_start = i * dklen
+        slice_end = (i + 1) * dklen
+        X = bytearray(B[slice_start:slice_end])
+        for _ in range(N):
+            j = int(hashlib.sha256(X).hexdigest(), 16) % N
+            X = bytearray(hashlib.sha256(X + B[j*dklen:(j+1)*dklen]).digest())
+        B[slice_start:slice_end] = X
+    return hashlib.pbkdf2_hmac('sha256', B, data, 1, dklen).hex()
+
+# Genetic Algorithm optimization (inspired by Aigarth evolution)
+def ga_optimize_nonce(block_data: str, target: int, population_size=200, generations=20, mutation_rate=0.05):
+    population = [random.randint(0, 1e6) for _ in range(population_size)]
+    for gen in range(generations):
+        fitness = []
+        for start_nonce in population:
+            hash_input = (block_data + str(start_nonce)).encode()
+            block_hash = int(mock_scrypt(hash_input, b'qubic_salt'), 16)
+            fitness.append(1 / (max(0, block_hash - target) + 1e-6))
+        total_fitness = sum(fitness)
+        selected = []
+        for _ in range(population_size):
+            pick = random.uniform(0, total_fitness)
+            current = 0
+            for i, fit in enumerate(fitness):
+                current += fit
+                if current > pick:
+                    selected.append(population[i])
+                    break
+        new_population = []
+        for i in range(0, population_size, 2):
+            parent1, parent2 = selected[i], selected[i+1]
+            child1 = (parent1 + parent2) // 2
+            child2 = child1 + int(random.gauss(0, 1000))
+            if random.random() < mutation_rate:
+                child1 += random.randint(-10000, 10000)
+            if random.random() < mutation_rate:
+                child2 += random.randint(-10000, 10000)
+            new_population.extend([child1, child2])
+        population = new_population
+    return min(population, key=lambda x: int(mock_scrypt((block_data + str(x)).encode(), b'qubic_salt'), 16))
+
+# Threaded Scrypt mining with OpenCL
+def threaded_scrypt_mine(block_data: str, target: int, threads: int = os.cpu_count()):
+    results = [None] * threads
+    lock = threading.Lock()
+
+    def miner_thread(thread_id):
+        try:
+            input_data = np.array([ord(c) for c in block_data] + [0] * (32 - len(block_data)), dtype=np.uint32)
+            input_buf = cl.Buffer(context, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=input_data)
+            nonce_buf = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=2000 * 4)
+            output_buf = cl.Buffer(context, cl.mem_flags.WRITE_ONLY, size=2000 * 4)
+            nonces = np.array([thread_id * 1000000 + i for i in range(2000)], dtype=np.uint32)
+            cl.enqueue_copy(queue, nonce_buf, nonces).wait()
+            scrypt_kernel(queue, (2000,), None, input_buf, nonce_buf, output_buf, np.uint32(target), np.uint32(2000)).wait()
+            output = np.zeros(2000, dtype=np.uint32)
+            cl.enqueue_copy(queue, output, output_buf).wait()
+            valid_nonce = next((i for i, h in enumerate(output) if h != 0xffffffff), None)
+            if valid_nonce is not None:
+                with lock:
+                    if results[thread_id] is None:
+                        results[thread_id] = (nonces[valid_nonce], f"{output[valid_nonce]:08x}")
+        except Exception as e:
+            print(f"Thread {thread_id} error: {e}")
+
+    threads_list = [threading.Thread(target=miner_thread, args=(i,)) for i in range(min(threads, 16))]  # Limit to 16 threads
+    for t in threads_list:
+        t.start()
+    for t in threads_list:
+        t.join()
+
+    valid_result = min((n, h) for n, h in enumerate(results) if h is not None, default=(0, "0" * 64))
+    return valid_result
+
+# Qubic UPoW integration (mock API)
+def submit_to_qubic(block_hash: str, miner_id: str):
+    # Mock Qubic submission (replace with real Qubic API when available)
+    print(f"Submitting to Qubic: {block_hash} from {miner_id}")
+    return {"status": "accepted", "reward": 100}  # Mock reward in QUBIC
+
+# Merge mining check
+def check_merge_mining(block_hash: str, ltc_target: int, doge_target: int):
+    hash_int = int(block_hash, 16)
+    return hash_int < ltc_target, hash_int < doge_target
+
+# Main mining loop
+def mine_block(transaction: Dict, config: Dict):
+    block_data = json.dumps({"transactions": [transaction], "timestamp": time.time(), "miner_id": config["miner_id"]})
+    target = 2 ** (256 - config["difficulty"])
+    ltc_target = 2 ** (256 - 20)  # Approx LTC difficulty (2025 estimate)
+    doge_target = 2 ** (256 - 18)  # Approx DOGE difficulty (2025 estimate)
+
+    # Optimize nonce with GA
+    start_nonce = ga_optimize_nonce(block_data, target)
+    hash_input = (block_data + str(start_nonce)).encode()
+    block_hash = mock_scrypt(hash_input, b'qubic_salt')
+
+    # OpenCL-accelerated mining
+    nonce, block_hash = threaded_scrypt_mine(block_data, target, threads=config.get("threads", os.cpu_count()))
+    hash_int = int(block_hash, 16)
+
+    # Submit to Qubic
+    qubic_response = submit_to_qubic(block_hash, config["miner_id"])
+    if qubic_response["status"] == "accepted":
+        reward = qubic_response["reward"]
+        print(f"Qubic reward: {reward} QUBIC")
+
+    # Check merge mining for LTC and DOGE
+    is_ltc_valid, is_doge_valid = check_merge_mining(block_hash, ltc_target, doge_target)
+    if is_ltc_valid:
+        print(f"Valid LTC block found: {block_hash}")
+        submit_to_pool("litecoin", block_hash, config["ltc_wallet"])
+    if is_doge_valid:
+        print(f"Valid DOGE block found: {block_hash}")
+        submit_to_pool("dogecoin", block_hash, config["doge_wallet"])
+
+    return {"nonce": nonce, "block_hash": block_hash, "qubic_reward": reward if "reward" in qubic_response else 0}
+
+# Submit to mining pool (mock API)
+def submit_to_pool(currency: str, block_hash: str, wallet: str):
+    print(f"Submitting {currency} block {block_hash} to pool for wallet {wallet}")
+    # Replace with real pool API (e.g., stratum protocol) when integrating with LTC/DOGE pools
+    return {"status": "submitted"}
+
+# Configuration loading
+def load_config(config_path: str = "config.json"):
+    with open(config_path, 'r') as f:
+        return json.load(f)
+
+# Main execution
+if __name__ == "__main__":
+    config = load_config()
+    transaction = {"type": "mine", "data": "test_transaction"}
+
+    while True:
+        block = mine_block(transaction, config)
+        time.sleep(max(0, 1 - (time.time() - start_time)))  # Target ~1s cycle

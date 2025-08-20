@@ -1,24 +1,13 @@
 # Qscrypt
 
-`Qscrypt.py` is a production-ready Scrypt mining software for Litecoin and Dogecoin, Qubic miners.
+`Qscrypt.py` is a production-ready Scrypt mining software for Litecoin and Dogecoin,  Qubic miners.
 
 It performs Scrypt hashing, submits shares to Stratum pools, and integrates with the Qubic network (https://github.com/qubic-li/client) during idling phases. 
 
-Features include multi-pool failover, Kafka coordination for nonce collision elimination, ASIC/GPU/CPU support, and Prometheus monitoring.
-
-Below is a concise **technical white paper** for `Qscrypt.py` (Version 3 of the `litecoin_dogecoin_miner.py` code), designed to explain its features and value proposition to investors. The white paper highlights the code’s capabilities for scaling to 600,000 Qubic miners to mine Litecoin and Dogecoin, achieving ~99% block dominance, with self-hosted infrastructure and Qubic network interoperability. It outlines the technical architecture, key features, performance metrics, and investment potential in a clear, professional manner suitable for an investor audience.
-
----
-
-# Technical White Paper: Qscrypt - Scalable Scrypt Mining for Litecoin and Dogecoin
-
-## Abstract
-Qscrypt is a high-performance, scalable Scrypt mining software designed to leverage the computational power of up to 600,000 Qubic network miners to dominate Litecoin (~1 TH/s network hashrate) and Dogecoin (~1.5 TH/s network hashrate) block rewards. By integrating multi-pool failover, Apache Kafka for nonce coordination, and support for ASICs, GPUs, and CPUs, Qscrypt ensures zero downtime, eliminates nonce collisions, and maximizes profitability. Fully interoperable with the Qubic network (https://github.com/qubic-li/client), it operates on self-hosted infrastructure, avoiding reliance on external cloud providers. With a total hashrate of ~150,150 TH/s, Qscrypt achieves ~99% block share, generating significant daily revenue (~$860K for Litecoin, ~$5.1M for Dogecoin) while maintaining security and scalability.
+By integrating multi-pool failover, Apache Kafka for nonce coordination, and support for ASICs, GPUs, and CPUs, Qscrypt ensures zero downtime, eliminates nonce collisions, and maximizes profitability. Fully interoperable with the Qubic network (https://github.com/qubic-li/client), operating on self-hosted infrastructure.
 
 ## 1. Introduction
 Qscrypt is a purpose-built Python software that enables hundreds of thousands of Qubic miners to mine Litecoin and Dogecoin using the Scrypt algorithm. By combining robust failover mechanisms, distributed task coordination, and advanced hardware support, Qscrypt offers a scalable, secure, and efficient solution for large-scale mining operations
-
-This white paper details the technical architecture, key features, performance metrics, and investment potential for stakeholders seeking to capitalize on the Qubic network’s computational capacity.
 
 ## 2. Technical Architecture
 

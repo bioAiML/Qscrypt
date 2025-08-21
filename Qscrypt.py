@@ -1,4 +1,4 @@
-# QScrypt.py
+# Qscrypt.py
 import hashlib
 import time
 import json
@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 import socket
 import binascii
 import ssl
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
 from prometheus_client import Counter, Gauge, start_http_server
 from kafka import KafkaProducer, KafkaConsumer
 import serial.tools.list_ports
@@ -33,6 +36,7 @@ KAFKA_BOOTSTRAP_SERVERS = ["localhost:9092"]
 KAFKA_TOPIC_TASKS = "mining_tasks"
 KAFKA_TOPIC_SHARES = "mining_shares"
 PROMETHEUS_PORT = 8000
+MAX_INVALID_SHARES = 5
 
 # Default pool configurations
 DEFAULT_POOLS = {
@@ -364,6 +368,11 @@ class ScryptMiner:
         self.gpu_devices = []
         self.asic_driver = AsicDriver()
         self.asic_devices = []
+        self.blacklist = set()
+        self.invalid_shares = {}
+        self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        self.public_key = self.private_key.public_key()
+        self.public_keys = {}  # MinerId to public_key, load from secure storage
         self._hardware_check()
         self._init_kafka()
 
@@ -524,6 +533,9 @@ class ScryptMiner:
             try:
                 for message in self.consumer:
                     task = message.value
+                    if not self.verify_task(task):
+                        logger.warning(f"Invalid task checksum for {task.get('job_id')}")
+                        continue
                     self.nonce_start = task.get("nonce_start", 0)
                     self.nonce_end = task.get("nonce_end", MAX_NONCE)
                     self.target = task.get("target", "0" * DIFFICULTY)
@@ -536,6 +548,8 @@ class ScryptMiner:
 
     def _submit_share(self, solution: Dict):
         if self.coordinator_mode:
+            if not self.verify_share(solution):
+                return False
             try:
                 result = self.stratum.submit_share(
                     solution["job_id"],
@@ -552,6 +566,7 @@ class ScryptMiner:
                 return False
         else:
             try:
+                solution = self.sign_share(solution)
                 self.producer.send(self.kafka_shares_topic, solution)
                 logger.info(f"Share sent to Kafka for job {solution['job_id']}")
                 solutions_submitted.labels(network=self.network, miner_id=self.miner_id).inc()
@@ -621,14 +636,17 @@ class ScryptMiner:
                         task_copy = task.copy()
                         task_copy["nonce_start"] = i * nonce_range
                         task_copy["nonce_end"] = (i + 1) * nonce_range
+                        task_copy["checksum"] = hashlib.sha256(json.dumps(task_copy, sort_keys=True).encode()).hexdigest()
                         self.producer.send(f"{self.kafka_tasks_topic}_{i}", task_copy)
                     logger.info(f"Distributed task {task['job_id']} to {miner_count} miners")
                 for message in KafkaConsumer(self.kafka_shares_topic, bootstrap_servers=self.kafka_bootstrap,
                                             security_protocol="SSL" if self.tls_enabled else "PLAINTEXT",
                                             value_deserializer=lambda x: json.loads(x.decode('utf-8'))):
                     solution = message.value
-                    if self._submit_share(solution):
-                        logger.info(f"Submitted share from miner {solution['miner_id']}")
+                    if self.verify_share(solution):
+                        self._submit_share(solution)
+                    else:
+                        logger.warning(f"Invalid share from miner {solution['miner_id']}")
                 time.sleep(0.005)
             except Exception as e:
                 logger.error(f"Coordinator error: {e}")
